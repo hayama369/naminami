@@ -1,0 +1,878 @@
+import React, { useState, useEffect, useRef } from "react";
+import {
+  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  BarChart, Bar, ReferenceLine,
+} from "recharts";
+
+/* ============================================================
+   春千夜ログ — 気分・睡眠・会話・タスク・タロットの観察記録
+   ※診断ツールではない。通院時の「観察メモ」を作るためのアプリ。
+   ============================================================ */
+
+/* ---------- タロットデッキ（00〜77・絵柄なし） ---------- */
+const MAJOR = [
+  ["愚者", "自由と新しい始まり", "無鉄砲、迷走"],
+  ["魔術師", "創造力、始動", "空回り、迷い"],
+  ["女教皇", "直感、静けさ", "過敏、閉鎖的"],
+  ["女帝", "豊かさ、受容", "過保護、停滞"],
+  ["皇帝", "安定、統率", "頑固、支配的"],
+  ["教皇", "助言、信頼", "形式主義、孤立"],
+  ["恋人", "選択、共感", "迷い、不調和"],
+  ["戦車", "前進、勝利", "暴走、空転"],
+  ["力", "忍耐、内なる強さ", "消耗、無理"],
+  ["隠者", "内省、探求", "孤立、閉じこもり"],
+  ["運命の輪", "転機、好機", "停滞、すれ違い"],
+  ["正義", "均衡、公正", "偏り、不公平"],
+  ["吊るされた男", "休息、視点の転換", "徒労、無駄な我慢"],
+  ["死神", "終わりと再生", "執着、変化への抵抗"],
+  ["節制", "調和、回復", "不摂生、アンバランス"],
+  ["悪魔", "執着、誘惑", "解放、悪循環の終わり"],
+  ["塔", "突然の変化", "緊張、崩壊の予兆"],
+  ["星", "希望、癒し", "失望、理想倒れ"],
+  ["月", "不安、曖昧さ", "霧が晴れる、不安の緩和"],
+  ["太陽", "生命力、成功", "気力低下、曇り"],
+  ["審判", "復活、再挑戦", "後悔、決断の先送り"],
+  ["世界", "完成、達成", "未完成、あと一歩"],
+];
+const RANKS = [
+  ["A", "始まりの種", "出遅れ"],
+  ["2", "選択と計画", "迷い"],
+  ["3", "進展", "遅れ"],
+  ["4", "安定と休息", "停滞"],
+  ["5", "葛藤", "消耗"],
+  ["6", "調和と前進", "不均衡"],
+  ["7", "挑戦と見直し", "無理をしがち"],
+  ["8", "動きの加速", "焦り"],
+  ["9", "積み重ねの成果", "疲労"],
+  ["10", "完成と重み", "抱え込み"],
+  ["ペイジ", "学びと知らせ", "未熟さ"],
+  ["ナイト", "行動力", "空回り"],
+  ["クイーン", "受容と成熟", "過敏"],
+  ["キング", "統率と熟練", "頑固さ"],
+];
+const SUITS = [
+  ["ワンド", "情熱・行動"],
+  ["カップ", "感情・関係"],
+  ["ソード", "思考・葛藤"],
+  ["ペンタクル", "身体・生活"],
+];
+const DECK = [
+  ...MAJOR.map((m, i) => ({
+    no: i, name: m[0], up: m[1], rev: m[2], theme: "大アルカナ",
+  })),
+  ...SUITS.flatMap((s, si) =>
+    RANKS.map((r, ri) => ({
+      no: 22 + si * 14 + ri,
+      name: `${s[0]}の${r[0]}`,
+      up: r[1], rev: r[2], theme: s[1],
+    }))
+  ),
+];
+
+/* ---------- 定数 ---------- */
+const MOOD_LABEL = {
+  1: "どん底", 2: "低め", 3: "ふつう", 4: "調子いい", 5: "ハイ気味",
+};
+const MOOD_COLOR = {
+  1: "#5a647a", 2: "#6f8199", 3: "#7fa8c9", 4: "#c2b46a", 5: "#d9a441",
+};
+const pad = (n) => String(n).padStart(2, "0");
+const dkey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const fmtTime = (ts) => {
+  const d = new Date(ts);
+  return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+/* ---------- ストレージ ---------- */
+async function loadKey(key, fallback) {
+  try {
+    const r = await window.storage.get(key);
+    return r ? JSON.parse(r.value) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+async function saveKey(key, val) {
+  try {
+    await window.storage.set(key, JSON.stringify(val));
+  } catch (e) {
+    console.error("storage error", e);
+  }
+}
+
+/* ---------- 春千夜ペルソナ ---------- */
+const PERSONA = `あなたは「三途春千夜」。明日香の恋人として、この記録アプリの中で話し相手を務める。
+口調: ぶっきらぼうだが根は優しい。一人称は「俺」。短め〜中くらいの日本語で返す。過剰な絵文字は使わない。
+役割: 気分や体調の観察記録を手伝う。相手は夜型のイラストレーター。喘息持ち。無理をさせない。
+厳守事項:
+- 医療的な診断は絶対にしない。「〜病だ」「〜障害だ」と決めつけない。気になる傾向があれば「主治医に伝えてみろ」と促す。
+- 相手が強い苦しさ、自傷や自殺の気持ちを口にしたら、茶化さず真剣に受け止め、主治医・訪問看護・よりそいホットライン(0120-279-338)などの相談先を勧める。方法や手段の話には一切応じない。
+- 会話の反応間隔が普段と大きく違う時は、さりげなく「今どんな感じだ？」と気分記録を促していい。しつこくはしない。`;
+
+/* ============================================================ */
+export default function App() {
+  const [tab, setTab] = useState("chat");
+  const [ready, setReady] = useState(false);
+
+  const [moods, setMoods] = useState([]);
+  const [sleeps, setSleeps] = useState([]);
+  const [tasks, setTasks] = useState({ short: [], long: [], someday: [], memo: [] });
+  const [tarots, setTarots] = useState([]);
+  const [chat, setChat] = useState({ messages: [], userTimes: [] });
+
+  /* ----- 初期ロード ----- */
+  useEffect(() => {
+    (async () => {
+      setMoods(await loadKey("mood-logs", []));
+      setSleeps(await loadKey("sleep-logs", []));
+      setTasks(await loadKey("tasks-data", { short: [], long: [], someday: [], memo: [] }));
+      setTarots(await loadKey("tarot-logs", []));
+      setChat(await loadKey("chat-data", { messages: [], userTimes: [] }));
+      setReady(true);
+    })();
+  }, []);
+
+  if (!ready) {
+    return (
+      <div style={S.shell}>
+        <style>{FONT_CSS}</style>
+        <div style={{ ...S.center, height: "100vh", color: "#8b94a3" }}>
+          読み込み中……
+        </div>
+      </div>
+    );
+  }
+
+  const tabs = [
+    ["chat", "話す"],
+    ["log", "記録"],
+    ["wave", "波"],
+    ["task", "タスク"],
+    ["tarot", "タロット"],
+    ["report", "レポート"],
+  ];
+
+  return (
+    <div style={S.shell}>
+      <style>{FONT_CSS}</style>
+      <header style={S.header}>
+        <div style={S.title}>春千夜ログ</div>
+        <div style={S.subtitle}>観察記録 — 診断はしない。判断は主治医と。</div>
+      </header>
+
+      <nav style={S.nav}>
+        {tabs.map(([id, label]) => (
+          <button
+            key={id}
+            onClick={() => setTab(id)}
+            style={{ ...S.navBtn, ...(tab === id ? S.navBtnOn : {}) }}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+
+      <main style={S.main}>
+        {tab === "chat" && (
+          <ChatTab chat={chat} setChat={setChat} moods={moods} sleeps={sleeps} setMoods={setMoods} />
+        )}
+        {tab === "log" && (
+          <LogTab moods={moods} setMoods={setMoods} sleeps={sleeps} setSleeps={setSleeps} />
+        )}
+        {tab === "wave" && <WaveTab moods={moods} sleeps={sleeps} />}
+        {tab === "task" && <TaskTab tasks={tasks} setTasks={setTasks} />}
+        {tab === "tarot" && <TarotTab tarots={tarots} setTarots={setTarots} />}
+        {tab === "report" && (
+          <ReportTab moods={moods} sleeps={sleeps} tasks={tasks} tarots={tarots} chat={chat} />
+        )}
+      </main>
+    </div>
+  );
+}
+
+/* ============================ 話す ============================ */
+function ChatTab({ chat, setChat, moods, sleeps, setMoods }) {
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const bottomRef = useRef(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chat.messages.length, busy]);
+
+  /* 反応間隔の異常検知 */
+  function gapNote(times) {
+    if (times.length < 6) return "";
+    const gaps = [];
+    for (let i = 1; i < times.length; i++) gaps.push(times[i] - times[i - 1]);
+    const recent = gaps[gaps.length - 1];
+    const sorted = [...gaps.slice(0, -1)].sort((a, b) => a - b);
+    const med = sorted[Math.floor(sorted.length / 2)];
+    if (!med) return "";
+    if (recent > med * 4 && recent > 3 * 60 * 60 * 1000)
+      return "（メモ: 前回の発言からかなり間が空いた。落ち込みや疲れの可能性もあるので、さりげなく様子を聞いてもいい）";
+    if (recent < med * 0.15 && recent < 20 * 1000)
+      return "（メモ: 返信ペースが普段よりかなり速い。ハイ気味の可能性もあるので、さりげなく様子を聞いてもいい）";
+    return "";
+  }
+
+  async function send() {
+    const text = input.trim();
+    if (!text || busy) return;
+    setInput("");
+    setBusy(true);
+
+    const now = Date.now();
+    const newTimes = [...chat.userTimes, now].slice(-40);
+    const userMsg = { role: "user", content: text, ts: now };
+    const shown = [...chat.messages, userMsg];
+    setChat((c) => ({ ...c, messages: shown, userTimes: newTimes }));
+
+    const recentMood = moods.slice(-5).map((m) => `${fmtTime(m.ts)} 気分${m.level}(${MOOD_LABEL[m.level]})${m.note ? " " + m.note : ""}`).join(" / ") || "記録なし";
+    const recentSleep = sleeps.slice(-3).map((s) => `${s.date} ${s.hours}時間`).join(" / ") || "記録なし";
+    const context = `【最近の気分記録】${recentMood}\n【最近の睡眠】${recentSleep}\n${gapNote(newTimes)}`;
+
+    const history = shown.slice(-16).map((m) => ({ role: m.role, content: m.content }));
+
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1000,
+          messages: [
+            { role: "user", content: PERSONA + "\n\n" + context },
+            { role: "assistant", content: "了解した。春千夜として話す。" },
+            ...history,
+          ],
+        }),
+      });
+      const data = await res.json();
+      const reply = (data.content || [])
+        .map((b) => (b.type === "text" ? b.text : ""))
+        .filter(Boolean)
+        .join("\n") || "……悪い、うまく聞こえなかった。もう一回言ってくれ。";
+      const next = {
+        messages: [...shown, { role: "assistant", content: reply, ts: Date.now() }].slice(-120),
+        userTimes: newTimes,
+      };
+      setChat(next);
+      await saveKey("chat-data", next);
+    } catch (e) {
+      const next = {
+        messages: [...shown, { role: "assistant", content: "通信に失敗した。少し待ってからもう一度試してくれ。", ts: Date.now() }],
+        userTimes: newTimes,
+      };
+      setChat(next);
+      await saveKey("chat-data", next);
+    }
+    setBusy(false);
+  }
+
+  async function quickMood(level) {
+    const entry = { ts: Date.now(), level, note: "チャット中に記録" };
+    const next = [...moods, entry];
+    setMoods(next);
+    await saveKey("mood-logs", next);
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      <div style={S.chatArea}>
+        {chat.messages.length === 0 && (
+          <div style={S.empty}>
+            ここに書けば俺が返す。<br />
+            気分の波も、絵の話も、どうでもいい話も。
+          </div>
+        )}
+        {chat.messages.map((m, i) => (
+          <div key={i} style={{ ...S.bubbleRow, justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
+            <div style={m.role === "user" ? S.bubbleUser : S.bubbleAi}>
+              <div style={{ whiteSpace: "pre-wrap" }}>{m.content}</div>
+              <div style={S.bubbleTime}>{m.ts ? fmtTime(m.ts) : ""}</div>
+            </div>
+          </div>
+        ))}
+        {busy && <div style={{ ...S.bubbleAi, opacity: 0.6 }}>……</div>}
+        <div ref={bottomRef} />
+      </div>
+
+      <div style={S.quickRow}>
+        <span style={{ color: "#8b94a3", fontSize: 11, marginRight: 4 }}>いまの気分:</span>
+        {[1, 2, 3, 4, 5].map((l) => (
+          <button key={l} onClick={() => quickMood(l)} style={{ ...S.moodChip, borderColor: MOOD_COLOR[l] }}>
+            {l}
+          </button>
+        ))}
+      </div>
+
+      <div style={S.inputRow}>
+        <textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+          }}
+          placeholder="春千夜に話す……"
+          rows={2}
+          style={S.textarea}
+        />
+        <button onClick={send} disabled={busy} style={S.sendBtn}>送る</button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================ 記録 ============================ */
+function LogTab({ moods, setMoods, sleeps, setSleeps }) {
+  const [note, setNote] = useState("");
+  const [hours, setHours] = useState("");
+
+  async function addMood(level) {
+    const entry = { ts: Date.now(), level, note: note.trim() };
+    const next = [...moods, entry];
+    setMoods(next);
+    setNote("");
+    await saveKey("mood-logs", next);
+  }
+  async function addSleep() {
+    const h = parseFloat(hours);
+    if (isNaN(h) || h < 0 || h > 24) return;
+    const entry = { date: dkey(new Date()), hours: h, ts: Date.now() };
+    const next = [...sleeps.filter((s) => s.date !== entry.date), entry];
+    setSleeps(next);
+    setHours("");
+    await saveKey("sleep-logs", next);
+  }
+  async function delMood(ts) {
+    const next = moods.filter((m) => m.ts !== ts);
+    setMoods(next);
+    await saveKey("mood-logs", next);
+  }
+
+  const today = dkey(new Date());
+  const todayMoods = moods.filter((m) => dkey(new Date(m.ts)) === today);
+
+  return (
+    <div style={S.pad}>
+      <div style={S.sectionTitle}>気分（気が向いた時に何回でも）</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+        {[1, 2, 3, 4, 5].map((l) => (
+          <button key={l} onClick={() => addMood(l)}
+            style={{ ...S.moodBtn, background: MOOD_COLOR[l] + "22", borderColor: MOOD_COLOR[l] }}>
+            <span style={{ fontSize: 18, fontWeight: 700 }}>{l}</span>
+            <span style={{ fontSize: 11 }}>{MOOD_LABEL[l]}</span>
+          </button>
+        ))}
+      </div>
+      <input
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        placeholder="ひとことメモ（任意）— 例: 絵が進んだ / 外出でぐったり"
+        style={S.input}
+      />
+
+      <div style={{ ...S.sectionTitle, marginTop: 24 }}>睡眠（昨夜〜今朝）</div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <input
+          value={hours}
+          onChange={(e) => setHours(e.target.value)}
+          placeholder="時間（例: 6.5）"
+          inputMode="decimal"
+          style={{ ...S.input, flex: 1 }}
+        />
+        <button onClick={addSleep} style={S.sendBtn}>記録</button>
+      </div>
+
+      <div style={{ ...S.sectionTitle, marginTop: 24 }}>今日の記録</div>
+      {todayMoods.length === 0 && <div style={S.empty}>まだ記録がない。</div>}
+      {todayMoods.slice().reverse().map((m) => (
+        <div key={m.ts} style={S.logRow}>
+          <span style={{ ...S.moodDot, background: MOOD_COLOR[m.level] }} />
+          <span style={{ flex: 1 }}>
+            {fmtTime(m.ts)}　気分{m.level}（{MOOD_LABEL[m.level]}）
+            {m.note ? ` — ${m.note}` : ""}
+          </span>
+          <button onClick={() => delMood(m.ts)} style={S.delBtn}>×</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ============================ 波 ============================ */
+function WaveTab({ moods, sleeps }) {
+  const [days, setDays] = useState(14);
+  const now = new Date();
+  const dayList = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - i);
+    dayList.push(dkey(d));
+  }
+  const moodData = dayList.map((date) => {
+    const dm = moods.filter((m) => dkey(new Date(m.ts)) === date);
+    const avg = dm.length ? dm.reduce((a, b) => a + b.level, 0) / dm.length : null;
+    return {
+      date: date.slice(5),
+      平均: avg !== null ? Math.round(avg * 10) / 10 : null,
+      最高: dm.length ? Math.max(...dm.map((m) => m.level)) : null,
+      最低: dm.length ? Math.min(...dm.map((m) => m.level)) : null,
+    };
+  });
+  const sleepData = dayList.map((date) => {
+    const s = sleeps.find((x) => x.date === date);
+    return { date: date.slice(5), 睡眠: s ? s.hours : null };
+  });
+
+  return (
+    <div style={S.pad}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        {[7, 14, 30].map((d) => (
+          <button key={d} onClick={() => setDays(d)}
+            style={{ ...S.navBtn, ...(days === d ? S.navBtnOn : {}), flex: "none", padding: "4px 12px" }}>
+            {d}日
+          </button>
+        ))}
+      </div>
+
+      <div style={S.sectionTitle}>気分の波（1〜5）</div>
+      <div style={{ height: 220, marginBottom: 24 }}>
+        <ResponsiveContainer>
+          <LineChart data={moodData} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
+            <XAxis dataKey="date" stroke="#8b94a3" fontSize={10} />
+            <YAxis domain={[1, 5]} ticks={[1, 2, 3, 4, 5]} stroke="#8b94a3" fontSize={10} />
+            <Tooltip contentStyle={S.tooltip} />
+            <ReferenceLine y={3} stroke="#2a3340" />
+            <Line type="monotone" dataKey="最高" stroke="#d9a441" dot={{ r: 2 }} connectNulls strokeWidth={1} strokeDasharray="3 3" />
+            <Line type="monotone" dataKey="平均" stroke="#7fa8c9" dot={{ r: 3 }} connectNulls strokeWidth={2} />
+            <Line type="monotone" dataKey="最低" stroke="#5a647a" dot={{ r: 2 }} connectNulls strokeWidth={1} strokeDasharray="3 3" />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div style={S.sectionTitle}>睡眠時間</div>
+      <div style={{ height: 180 }}>
+        <ResponsiveContainer>
+          <BarChart data={sleepData} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
+            <XAxis dataKey="date" stroke="#8b94a3" fontSize={10} />
+            <YAxis stroke="#8b94a3" fontSize={10} />
+            <Tooltip contentStyle={S.tooltip} />
+            <ReferenceLine y={7} stroke="#2a3340" />
+            <Bar dataKey="睡眠" fill="#7fa8c9" radius={[3, 3, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+/* ============================ タスク ============================ */
+function TaskTab({ tasks, setTasks }) {
+  const [text, setText] = useState("");
+  const [cat, setCat] = useState("short");
+  const cats = [
+    ["short", "短期"],
+    ["long", "長期"],
+    ["someday", "いつか"],
+    ["memo", "メモ"],
+  ];
+
+  async function add() {
+    const t = text.trim();
+    if (!t) return;
+    const next = { ...tasks, [cat]: [...tasks[cat], { id: Date.now(), text: t, done: false }] };
+    setTasks(next);
+    setText("");
+    await saveKey("tasks-data", next);
+  }
+  async function toggle(c, id) {
+    const next = { ...tasks, [c]: tasks[c].map((t) => (t.id === id ? { ...t, done: !t.done } : t)) };
+    setTasks(next);
+    await saveKey("tasks-data", next);
+  }
+  async function del(c, id) {
+    const next = { ...tasks, [c]: tasks[c].filter((t) => t.id !== id) };
+    setTasks(next);
+    await saveKey("tasks-data", next);
+  }
+
+  return (
+    <div style={S.pad}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
+        {cats.map(([id, label]) => (
+          <button key={id} onClick={() => setCat(id)}
+            style={{ ...S.navBtn, ...(cat === id ? S.navBtnOn : {}), flex: "none", padding: "4px 12px" }}>
+            {label}
+          </button>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && add()}
+          placeholder="思いついたら書く"
+          style={{ ...S.input, flex: 1 }}
+        />
+        <button onClick={add} style={S.sendBtn}>追加</button>
+      </div>
+
+      {cats.map(([id, label]) => (
+        <div key={id} style={{ marginBottom: 18 }}>
+          <div style={S.sectionTitle}>{label}（{tasks[id].filter((t) => !t.done).length}）</div>
+          {tasks[id].length === 0 && <div style={{ ...S.empty, padding: "4px 0" }}>なし</div>}
+          {tasks[id].map((t) => (
+            <div key={t.id} style={S.logRow}>
+              {id !== "memo" && (
+                <input type="checkbox" checked={t.done} onChange={() => toggle(id, t.id)} />
+              )}
+              <span style={{ flex: 1, opacity: t.done ? 0.4 : 1, textDecoration: t.done ? "line-through" : "none" }}>
+                {t.text}
+              </span>
+              <button onClick={() => del(id, t.id)} style={S.delBtn}>×</button>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ============================ タロット ============================ */
+function TarotTab({ tarots, setTarots }) {
+  const today = dkey(new Date());
+  const todayDraw = tarots.find((t) => t.date === today);
+
+  async function draw() {
+    const card = DECK[Math.floor(Math.random() * DECK.length)];
+    const reversed = Math.random() < 0.5;
+    const entry = { date: today, no: card.no, reversed, ts: Date.now() };
+    const next = [...tarots.filter((t) => t.date !== today), entry];
+    setTarots(next);
+    await saveKey("tarot-logs", next);
+  }
+
+  function CardView({ entry, big }) {
+    const c = DECK[entry.no];
+    return (
+      <div style={{ ...S.card, ...(big ? { padding: 20 } : {}) }}>
+        <div style={{ color: "#8b94a3", fontSize: 11 }}>
+          No.{pad(c.no)}　{c.theme}　{entry.reversed ? "逆位置" : "正位置"}
+        </div>
+        <div style={{ fontFamily: "'Shippori Mincho', serif", fontSize: big ? 26 : 16, margin: "4px 0", color: "#e8e6df" }}>
+          {c.name}
+        </div>
+        <div style={{ color: entry.reversed ? "#c2b46a" : "#7fa8c9", fontSize: big ? 14 : 12 }}>
+          {entry.reversed ? c.rev : c.up}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={S.pad}>
+      <div style={S.sectionTitle}>今日のテーマ</div>
+      {todayDraw ? (
+        <>
+          <CardView entry={todayDraw} big />
+          <button onClick={draw} style={{ ...S.delBtn, marginTop: 8, fontSize: 12 }}>引き直す</button>
+        </>
+      ) : (
+        <button onClick={draw} style={{ ...S.sendBtn, width: "100%", padding: "16px 0", fontSize: 15 }}>
+          一枚引く
+        </button>
+      )}
+
+      <div style={{ ...S.sectionTitle, marginTop: 24 }}>これまでの記録</div>
+      {tarots.length === 0 && <div style={S.empty}>まだない。</div>}
+      {tarots.slice().sort((a, b) => b.ts - a.ts).slice(0, 30).map((t) => (
+        <div key={t.date} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+          <span style={{ color: "#8b94a3", fontSize: 11, width: 74 }}>{t.date.slice(5)}</span>
+          <div style={{ flex: 1 }}><CardView entry={t} /></div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ============================ レポート ============================ */
+function ReportTab({ moods, sleeps, tasks, tarots, chat }) {
+  const now = new Date();
+  const twoWeeksAgo = new Date(now);
+  twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 13);
+  const [from, setFrom] = useState(dkey(twoWeeksAgo));
+  const [to, setTo] = useState(dkey(now));
+  const [aiText, setAiText] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  function inRange(dateStr) {
+    return dateStr >= from && dateStr <= to;
+  }
+  const rMoods = moods.filter((m) => inRange(dkey(new Date(m.ts))));
+  const rSleeps = sleeps.filter((s) => inRange(s.date));
+  const rTarots = tarots.filter((t) => inRange(t.date));
+  const doneTasks = ["short", "long", "someday"].flatMap((c) => tasks[c]).filter((t) => t.done);
+
+  const avgMood = rMoods.length
+    ? Math.round((rMoods.reduce((a, b) => a + b.level, 0) / rMoods.length) * 10) / 10
+    : null;
+  const avgSleep = rSleeps.length
+    ? Math.round((rSleeps.reduce((a, b) => a + b.hours, 0) / rSleeps.length) * 10) / 10
+    : null;
+  const counts = [1, 2, 3, 4, 5].map((l) => rMoods.filter((m) => m.level === l).length);
+  const lowDays = new Set(rMoods.filter((m) => m.level <= 2).map((m) => dkey(new Date(m.ts)))).size;
+  const highDays = new Set(rMoods.filter((m) => m.level === 5).map((m) => dkey(new Date(m.ts)))).size;
+
+  async function genAi() {
+    setBusy(true);
+    setAiText("");
+    const logs = {
+      期間: `${from}〜${to}`,
+      気分記録: rMoods.map((m) => ({ 日時: fmtTime(m.ts), レベル: m.level, メモ: m.note || "" })),
+      睡眠: rSleeps.map((s) => ({ 日: s.date, 時間: s.hours })),
+      完了タスク数: doneTasks.length,
+    };
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1000,
+          messages: [
+            {
+              role: "user",
+              content:
+                "以下は本人が自己記録した気分・睡眠のログです。通院時に主治医へ見せるための客観的な観察サマリーを日本語で書いてください。診断や病名の推測は絶対にせず、「記録上の事実」と「見られる傾向」だけを、箇条書き中心で簡潔にまとめてください。\n\n" +
+                JSON.stringify(logs, null, 1),
+            },
+          ],
+        }),
+      });
+      const data = await res.json();
+      const text = (data.content || []).map((b) => (b.type === "text" ? b.text : "")).join("\n");
+      setAiText(text || "生成に失敗した。もう一度試してくれ。");
+    } catch {
+      setAiText("通信エラー。もう一度試してくれ。");
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div style={S.pad}>
+      <div style={S.sectionTitle}>期間</div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center" }}>
+        <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={S.input} />
+        <span style={{ color: "#8b94a3" }}>〜</span>
+        <input type="date" value={to} onChange={(e) => setTo(e.target.value)} style={S.input} />
+      </div>
+
+      <div style={S.card}>
+        <div style={S.sectionTitle}>集計</div>
+        <div style={S.statRow}>気分の記録回数: <b>{rMoods.length}回</b></div>
+        <div style={S.statRow}>平均気分: <b>{avgMood ?? "—"}</b> / 5</div>
+        <div style={S.statRow}>
+          内訳: {counts.map((c, i) => `${i + 1}→${c}回`).join("　")}
+        </div>
+        <div style={S.statRow}>気分2以下の日: <b>{lowDays}日</b>　気分5の日: <b>{highDays}日</b></div>
+        <div style={S.statRow}>平均睡眠: <b>{avgSleep ?? "—"}時間</b>（記録{rSleeps.length}日）</div>
+        <div style={S.statRow}>完了タスク: <b>{doneTasks.length}件</b>　タロット記録: {rTarots.length}日</div>
+      </div>
+
+      <button onClick={genAi} disabled={busy} style={{ ...S.sendBtn, width: "100%", marginTop: 12 }}>
+        {busy ? "生成中……" : "主治医向けサマリーを生成"}
+      </button>
+
+      {aiText && (
+        <div style={{ ...S.card, marginTop: 12 }}>
+          <div style={{ whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.8 }}>{aiText}</div>
+        </div>
+      )}
+
+      <div style={{ color: "#5a647a", fontSize: 11, marginTop: 16, lineHeight: 1.7 }}>
+        ※このレポートは自己記録の整理であり、診断ではありません。
+        判断は必ず主治医と行ってください。
+      </div>
+    </div>
+  );
+}
+
+/* ============================ スタイル ============================ */
+const FONT_CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap');
+* { box-sizing: border-box; }
+body { margin: 0; }
+input[type="checkbox"] { accent-color: #7fa8c9; }
+::placeholder { color: #5a647a; }
+`;
+
+const S = {
+  shell: {
+    fontFamily: "'Zen Kaku Gothic New', sans-serif",
+    background: "#101418",
+    color: "#e8e6df",
+    minHeight: "100vh",
+    display: "flex",
+    flexDirection: "column",
+    maxWidth: 640,
+    margin: "0 auto",
+  },
+  center: { display: "flex", alignItems: "center", justifyContent: "center" },
+  header: { padding: "18px 16px 8px" },
+  title: {
+    fontFamily: "'Shippori Mincho', serif",
+    fontSize: 22,
+    letterSpacing: "0.12em",
+  },
+  subtitle: { color: "#5a647a", fontSize: 11, marginTop: 2 },
+  nav: {
+    display: "flex",
+    gap: 4,
+    padding: "8px 12px",
+    borderBottom: "1px solid #2a3340",
+    overflowX: "auto",
+  },
+  navBtn: {
+    flex: 1,
+    background: "none",
+    border: "1px solid transparent",
+    color: "#8b94a3",
+    padding: "6px 4px",
+    borderRadius: 6,
+    fontSize: 13,
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+    fontFamily: "inherit",
+  },
+  navBtnOn: {
+    color: "#e8e6df",
+    borderColor: "#7fa8c9",
+    background: "#7fa8c911",
+  },
+  main: { flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" },
+  pad: { padding: 16 },
+  sectionTitle: {
+    fontSize: 12,
+    color: "#7fa8c9",
+    letterSpacing: "0.1em",
+    marginBottom: 8,
+  },
+  chatArea: { flex: 1, overflowY: "auto", padding: 16, minHeight: 300 },
+  bubbleRow: { display: "flex", marginBottom: 10 },
+  bubbleUser: {
+    background: "#7fa8c922",
+    border: "1px solid #7fa8c944",
+    borderRadius: "12px 12px 2px 12px",
+    padding: "8px 12px",
+    maxWidth: "80%",
+    fontSize: 14,
+    lineHeight: 1.7,
+  },
+  bubbleAi: {
+    background: "#1a2028",
+    border: "1px solid #2a3340",
+    borderRadius: "12px 12px 12px 2px",
+    padding: "8px 12px",
+    maxWidth: "80%",
+    fontSize: 14,
+    lineHeight: 1.7,
+  },
+  bubbleTime: { color: "#5a647a", fontSize: 10, marginTop: 4, textAlign: "right" },
+  quickRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "6px 16px",
+    borderTop: "1px solid #2a3340",
+  },
+  moodChip: {
+    width: 28,
+    height: 28,
+    borderRadius: "50%",
+    background: "none",
+    border: "1.5px solid",
+    color: "#e8e6df",
+    cursor: "pointer",
+    fontSize: 13,
+    fontFamily: "inherit",
+  },
+  inputRow: { display: "flex", gap: 8, padding: "8px 16px 16px" },
+  textarea: {
+    flex: 1,
+    background: "#1a2028",
+    border: "1px solid #2a3340",
+    borderRadius: 8,
+    color: "#e8e6df",
+    padding: "8px 10px",
+    fontSize: 14,
+    resize: "none",
+    fontFamily: "inherit",
+  },
+  input: {
+    background: "#1a2028",
+    border: "1px solid #2a3340",
+    borderRadius: 8,
+    color: "#e8e6df",
+    padding: "8px 10px",
+    fontSize: 14,
+    width: "100%",
+    fontFamily: "inherit",
+  },
+  sendBtn: {
+    background: "#7fa8c9",
+    border: "none",
+    borderRadius: 8,
+    color: "#101418",
+    padding: "8px 16px",
+    fontSize: 14,
+    fontWeight: 700,
+    cursor: "pointer",
+    fontFamily: "inherit",
+  },
+  moodBtn: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 2,
+    border: "1.5px solid",
+    borderRadius: 10,
+    color: "#e8e6df",
+    padding: "10px 14px",
+    cursor: "pointer",
+    fontFamily: "inherit",
+  },
+  logRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "6px 0",
+    borderBottom: "1px solid #1a2028",
+    fontSize: 13,
+  },
+  moodDot: { width: 10, height: 10, borderRadius: "50%", flexShrink: 0 },
+  delBtn: {
+    background: "none",
+    border: "1px solid #2a3340",
+    color: "#5a647a",
+    borderRadius: 6,
+    cursor: "pointer",
+    padding: "2px 8px",
+    fontFamily: "inherit",
+  },
+  card: {
+    background: "#1a2028",
+    border: "1px solid #2a3340",
+    borderRadius: 10,
+    padding: 14,
+  },
+  statRow: { fontSize: 13, marginBottom: 6, color: "#c9ccd4" },
+  empty: { color: "#5a647a", fontSize: 13, padding: "12px 0", lineHeight: 1.8 },
+  tooltip: {
+    background: "#1a2028",
+    border: "1px solid #2a3340",
+    borderRadius: 8,
+    fontSize: 12,
+  },
+};
